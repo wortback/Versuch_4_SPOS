@@ -40,12 +40,25 @@ typedef struct {
 	
 	// Pointer to the name of the heap
 	const char *name;
+	
+	// For Next Fit strategy
+	MemAddr nextFitAddrLast;
+	
+	uint16_t firstNibble[MAX_NUMBER_OF_PROCESSES];
+	uint16_t lastNibble[MAX_NUMBER_OF_PROCESSES];
 } Heap;
 
+//! Internal Heap 
 extern Heap intHeap__;
+
+//! External Heap
+extern Heap extHeap__;
 
 //! Pointer to the Heap intHeap__
 #define intHeap (&intHeap__)
+
+//! Pointer to the Heap extHeap__
+#define extHeap (&extHeap__)
 
 void os_initHeaps();
 

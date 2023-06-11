@@ -11,6 +11,7 @@
 #ifndef _OS_PROCESS_H
 #define _OS_PROCESS_H
 
+#include "os_mem_drivers.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -58,6 +59,12 @@ typedef struct {
 	Priority priority;
 	union StackPointer sp;
 	StackChecksum checksum;
+	
+	// For optimized garbage collection
+	MemAddr allocFrameStartInt;
+	MemAddr allocFrameEndInt;
+	MemAddr allocFrameStartExt;
+	MemAddr allocFrameEndExt;
 } Process;
 
 /*!

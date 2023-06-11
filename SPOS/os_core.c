@@ -129,10 +129,10 @@ void os_init(void) {
 	if((uint16_t)(&__heap_start) > 0x100 + HEAPOFFSET) {
 		os_errorPStr(PSTR("Heap too close to Globals"));
 	}
-
-    os_initScheduler();
 	
 	initMemoryDriver();
+	
+	os_initScheduler();
 	
 	os_initHeaps();
 

@@ -16,6 +16,7 @@
 #include "os_taskman.h"
 #include "os_core.h"
 #include "lcd.h"
+#include "os_memory.h"
 
 #include <avr/interrupt.h>
 #include <stdbool.h>
@@ -189,6 +190,13 @@ ProcessID os_exec(Program *program, Priority priority) {
 	}
 	
 	Process prog;
+	
+	/* For efficient garbage collection, we use the MapAdress*/
+	prog.allocFrameStartInt = 0x0471; // intHeap__.startMapAddr + intHeap__.sizeMap - 1;
+	prog.allocFrameEndInt = 0x022c; // intHeap__.startMapAddr;
+	prog.allocFrameStartExt = 0xffff; // extHeap__.startMapAddr + extHeap__.sizeMap - 1;
+	prog.allocFrameEndExt = 0x0000; // extHeap__.startMapAddr;
+	
 	prog.program = program;
 	prog.priority = priority;
 	prog.state = OS_PS_READY;
@@ -205,6 +213,12 @@ ProcessID os_exec(Program *program, Priority priority) {
 	prog.sp.as_int-=2;
 	os_processes[pid] = prog;
 	os_processes[pid].checksum = os_getStackChecksum(pid);
+	
+	for(uint8_t i = 0; i < 2; i++){
+		Heap* heap = os_lookupHeap(i);
+		heap->firstNibble[pid] = heap->sizeMap;
+		heap->lastNibble[pid] = 0;
+	}
 	
 	
 	os_resetProcessSchedulingInformation(pid);
@@ -387,6 +401,15 @@ bool os_kill(ProcessID pid)
 		
 		// Set the state of the process to unused, effectively "killing" it
 		os_processes[pid].state = OS_PS_UNUSED;
+		
+		// Garbage collection
+		os_freeProcessMemory(intHeap, pid);
+		os_freeProcessMemory(extHeap, pid);
+		os_processes[pid].allocFrameStartInt = 0x0471;// intHeap__.startMapAddr + intHeap__.sizeMap - 1;
+		os_processes[pid].allocFrameEndInt = 0x022c;// intHeap__.startMapAddr;
+		os_processes[pid].allocFrameStartExt = 0xffff;// extHeap__.startMapAddr + extHeap__.sizeMap - 1;
+		os_processes[pid].allocFrameEndExt = 0x0000;// extHeap__.startMapAddr;
+		// -----------------------------------
 		
 		// If the process being killed is the currently running one, reset the critical section count
 		if(pid == os_getCurrentProc())

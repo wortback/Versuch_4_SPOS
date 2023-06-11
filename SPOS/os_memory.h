@@ -21,6 +21,12 @@
 //! Allocates memory in the heap
 MemAddr os_malloc(Heap *heap, size_t size);
 
+//! Reallocates memory in the heap
+MemAddr os_realloc(Heap* heap, MemAddr addr, uint16_t size);
+
+//! Garbage collector for the heap cleanup 
+void os_freeProcessMemory(Heap* heap, ProcessID pid);
+
 //! Frees the allocated memory 
 void os_free(Heap *heap, MemAddr addr);
 
@@ -52,6 +58,9 @@ MemValue os_getMapEntry(Heap const *heap, MemAddr addr);
 
 //! Chunk size at location getter
 uint16_t os_getChunkSize(Heap const *heap, MemAddr addr);
+
+//! Get nibble on the address
+uint8_t getNibble(Heap const* heap, MemAddr addr);
 
 
 #endif

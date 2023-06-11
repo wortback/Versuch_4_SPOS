@@ -32,6 +32,12 @@ typedef void MemoryWrite(MemAddr addr, MemValue value);
 //! Pointer to the driver instance
 #define intSRAM (&intSRAM__)
 
+//! Pointer to the external memory 
+#define extSRAM (&extSRAM__)
+
+//! Initialize the external memory
+void external_init(void);
+
 
 //! A general memory driver
 typedef struct {
@@ -48,5 +54,7 @@ void initMemoryDriver(void);
 
 //! Driver instance
 extern MemDriver intSRAM__;
+
+extern MemDriver extSRAM__;
 
 #endif

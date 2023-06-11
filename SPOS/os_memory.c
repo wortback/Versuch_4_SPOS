@@ -72,7 +72,7 @@ MemAddr os_malloc(Heap *heap, size_t size) {
 		ProcessID procID = os_getCurrentProc();
 		
 		// Set the nibble value to the PID of the process which got the memory allocated
-		nibble = (nibble&(0x0F<<(nib*4))) | procID<<((1 - nib)*4); // keep read low nibble and replace high nibble if pMem is even otherwise reverse
+		nibble = (nibble&(0x0F<<(nib*4))) | procID<<((1 - nib)*4); // keep read low nibble and replace high nibble if procMemory is even otherwise reverse
 		
 		// Set a new value of the nibble at mapAddr
 		setMapEntry(heap, mapAddr, nibble);
@@ -91,6 +91,48 @@ MemAddr os_malloc(Heap *heap, size_t size) {
 			setMapEntry(heap, (mapAddr + (MemAddr)(index + 1)/2), nibble);
 		}
 	}
+	
+	/* Check if no address found*/
+	if(procMemory == 0) {
+		os_leaveCriticalSection();
+		return procMemory;
+	}
+
+	/* For efficient Garbage Collection */
+	if(heap == intHeap) {
+		MemAddr	mapAdr = heap->firstMapAddr + (procMemory - heap->firstUseAddr)/2;
+		Process* curProcess = os_getProcessSlot(os_getCurrentProc());
+		// Case: Process first time calling malloc
+		if( curProcess->allocFrameStartInt > curProcess->allocFrameEndInt  ) {
+			curProcess->allocFrameStartInt	= mapAdr;
+			curProcess->allocFrameEndInt	= mapAdr + size/2;
+		}
+		// Case: New start Addr smaller than allocFrameStart
+		else if( mapAdr < curProcess->allocFrameStartInt) {
+			curProcess->allocFrameStartInt = mapAdr;
+		}
+		// Case: New end Addr larger than allocFrameEnd
+		else if( (mapAdr + size/2) > curProcess->allocFrameEndInt) {
+			curProcess->allocFrameEndInt = mapAdr + size/2;
+		}
+		} else if(heap == extHeap) {
+		MemAddr	mapAdr = heap->firstMapAddr + (procMemory - heap->firstUseAddr)/2;
+		Process* curProcess = os_getProcessSlot(os_getCurrentProc());
+		// Case: Process first time calling malloc
+		if( curProcess->allocFrameStartExt > curProcess->allocFrameEndExt  ) {
+			curProcess->allocFrameStartExt	= mapAdr;
+			curProcess->allocFrameEndExt	= mapAdr + size/2;
+		}
+		// Case: New start Addr smaller than allocFrameStart
+		else if( mapAdr < curProcess->allocFrameStartExt) {
+			curProcess->allocFrameStartExt = mapAdr;
+		}
+		// Case: New end Addr larger than allocFrameEnd
+		else if( (mapAdr + size/2) > curProcess->allocFrameEndExt) {
+			curProcess->allocFrameEndExt = mapAdr + size/2;
+		}
+	}	
+	
 	os_leaveCriticalSection();
 	
 	return procMemory;
@@ -192,6 +234,9 @@ MemAddr os_getFirstByteOfChunk(Heap const *heap, MemAddr addr) {
 void os_freeAsOwner(Heap *heap, MemAddr addr, ProcessID owner) {
 	// Find the first byte of the chunk related to the address
 	MemAddr useAddr = os_getFirstByteOfChunk(heap, addr);
+	
+	size_t toFreeProcSize = os_getChunkSize(heap, useAddr);
+	
 	if(useAddr != 0x0) { // If the address is not null
 
 		int	nib = useAddr % 2; // Compute which nibble to work with, based on the address
@@ -248,6 +293,128 @@ void os_freeAsOwner(Heap *heap, MemAddr addr, ProcessID owner) {
 			}
 			// Continue until the nibble value doesn't change or until the end of the map addresses is reached
 		} while (newNibbles != nibble && mapAddr < heap->firstUseAddr);
+		
+		
+		
+		/* For efficient garbage collection */
+		mapAddr	= heap->firstMapAddr + (useAddr - heap->firstUseAddr)/2;
+		if(heap == intHeap) {
+			Process* curProcess = os_getProcessSlot(owner);
+
+			// Case: Process owns only one Chunk at the moment
+			// if( (curProcess->allocFrameStartInt == mapAddr) && (curProcess->allocFrameEndInt == mapAddr + (toFreeProcSize/2))) {
+			if( (curProcess->allocFrameStartInt == mapAddr) && ((curProcess->allocFrameEndInt == mapAddr + (toFreeProcSize/2)) || (curProcess->allocFrameEndInt == mapAddr + (toFreeProcSize/2) - 1))) {
+				nibble = os_getMapEntry(heap, curProcess->allocFrameEndInt);
+				if (!( (ProcessID)(nibble>>4) == owner || (ProcessID)(nibble&0x0F) == owner)) {
+					curProcess->allocFrameStartInt	= heap->firstMapAddr + heap->sizeMap - 1;
+					curProcess->allocFrameEndInt	= heap->firstMapAddr;
+				}
+			}
+
+			// Case: We free the chunk which is set to allocFrameStart
+			if((curProcess->allocFrameStartInt == mapAddr) && ((ProcessID)getHighNibble(heap, mapAddr) != owner)) {
+				mapAddr += (toFreeProcSize/2);
+				while(mapAddr <= curProcess->allocFrameEndInt) {
+					nibble = os_getMapEntry(heap, mapAddr);
+					if((ProcessID)(nibble>>4) == owner || (ProcessID)(nibble&0x0F) == owner) {
+						curProcess->allocFrameStartInt = mapAddr;
+						break;
+					}
+					mapAddr++;
+				}
+			}
+			// Case: We free the chunk which is set to allocFrameEnd
+			else if(curProcess->allocFrameEndInt == mapAddr + (toFreeProcSize/2)) {
+				MemAddr tmp = 0;
+				while(mapAddr >= curProcess->allocFrameStartInt) {
+					nibble = os_getMapEntry(heap, mapAddr);
+					if((tmp == 0) && (nibble != 0x00)) {
+						tmp = mapAddr;
+					}
+
+					if((ProcessID)(nibble&0x0F) == owner) {
+						switch(tmp) {
+							case 0: curProcess->allocFrameEndInt	= mapAddr; break;
+							default: curProcess->allocFrameEndInt	= tmp; break;
+						}
+						break;
+						} else if(((ProcessID)(nibble&0x0F) != owner) && ((nibble&0x0F) != 0x0F)) {
+						tmp = 0;
+					}
+
+					if((ProcessID)(nibble>>4) == owner) {
+						switch(tmp) {
+							case 0: curProcess->allocFrameEndInt	= mapAddr; break;
+							default: curProcess->allocFrameEndInt	= tmp; break;
+						}
+						break;
+						} else if((nibble>>4) != 0x0F) {
+						tmp = 0;
+					}
+
+					mapAddr--;
+				}
+			}
+
+		}
+		else if (heap == extHeap) {
+			Process* curProcess = os_getProcessSlot(owner);
+
+			// Case: Process owns only one Chunk at the moment
+			//if( (curProcess->allocFrameStartExt == mapAddr) && (curProcess->allocFrameEndExt == mapAddr + (toFreeProcSize/2))) {
+			if( (curProcess->allocFrameStartExt == mapAddr) && ((curProcess->allocFrameEndExt == mapAddr + (toFreeProcSize/2)) || (curProcess->allocFrameEndExt == mapAddr + (toFreeProcSize/2) - 1))) {
+				nibble = os_getMapEntry(heap, curProcess->allocFrameEndExt);
+				if (!( (ProcessID)(nibble>>4) == owner || (ProcessID)(nibble&0x0F) == owner)) {
+					curProcess->allocFrameStartExt	= heap->firstMapAddr + heap->sizeMap - 1;
+					curProcess->allocFrameEndExt	= heap->firstMapAddr;
+				}
+			}
+
+			// Case: We free the chunk which is set to allocFrameStart
+			if(curProcess->allocFrameStartExt == mapAddr && ((ProcessID)getHighNibble(heap, mapAddr) != owner)) {
+				mapAddr += (toFreeProcSize/2);
+				while(mapAddr <= curProcess->allocFrameEndExt) {
+					nibble = os_getMapEntry(heap, mapAddr);
+					if((ProcessID)(nibble>>4) == owner || (ProcessID)(nibble&0x0F) == owner) {
+						curProcess->allocFrameStartExt = mapAddr;
+						break;
+					}
+					mapAddr++;
+				}
+			}
+			// Case: We free the chunk which is set to allocFrameEnd
+			else if(curProcess->allocFrameEndExt == mapAddr + (toFreeProcSize/2)) {
+				MemAddr tmp = 0;
+				while(mapAddr >= curProcess->allocFrameStartExt) {
+					nibble = os_getMapEntry(heap, mapAddr);
+					if((tmp == 0) && (nibble != 0x00)) {
+						tmp = mapAddr;
+					}
+
+					if((ProcessID)(nibble&0x0F) == owner) {
+						switch(tmp) {
+							case 0: curProcess->allocFrameEndExt	= mapAddr; break;
+							default: curProcess->allocFrameEndExt	= tmp; break;
+						}
+						break;
+						} else if(((ProcessID)(nibble&0x0F) != owner) && ((nibble&0x0F) != 0x0F)) {
+						tmp = 0;
+					}
+
+					if((ProcessID)(nibble>>4) == owner) {
+						switch(tmp) {
+							case 0: curProcess->allocFrameEndExt	= mapAddr; break;
+							default: curProcess->allocFrameEndExt	= tmp; break;
+						}
+						break;
+						} else if((nibble>>4) != 0x0F) {
+						tmp = 0;
+					}
+
+					mapAddr--;
+				}
+			}
+		}
 	}
 }
 
@@ -304,16 +471,21 @@ uint8_t getNibbleVal(Heap const* heap, uint8_t nibbleaddr){
 }
 
 // Get the start address of the memory block containing the given address
-uint16_t getStartOfBlock(Heap const* heap, uint16_t addr){
-	while(getNibbleVal(heap, addr) == 0xF){ // While the nibble value is 0xF (indicating a used block)
+uint16_t getStartOfBlock(Heap const* heap, uint16_t addr) {
+	/*while(getNibbleVal(heap, addr) == 0xF){ // While the nibble value is 0xF (indicating a used block)
 		addr--; // Decrement the address
 	}
-	return addr; // Return the start address of the block
+	return addr; // Return the start address of the block */
+		while(addr > 0 && getNibble(heap,addr) == 0xf){
+			addr--;
+		}
+		return addr;
 }
 
 // Get the size of the memory block at the given address
 uint16_t os_getChunkSize(Heap const* heap, MemAddr addr){
-	addr = getStartOfBlock(heap, addr); // Get the start address of the block
+	uint16_t temp = addr - heap->firstUseAddr;
+	addr = getStartOfBlock(heap, temp); // Get the start address of the block
 	uint16_t start = addr; // Store the start address
 	
 	do {
@@ -321,4 +493,177 @@ uint16_t os_getChunkSize(Heap const* heap, MemAddr addr){
 	} while(getNibbleVal(heap, addr) == 0xF); // While the nibble value is 0xF (indicating a used block)
 	
 	return (uint16_t)(addr - start); // Calculate and return the size of the block
+}
+
+uint8_t getNibble(Heap const* heap, MemAddr addr){
+	MemAddr currentAddr = convertToMemAddr(heap, addr);
+	MemValue value = heap->driver->read(currentAddr);
+	if(addr % 2 == 0){
+		return (uint8_t)(value >> 4);
+		} else {
+		return value & 0x0f;
+	}
+}
+
+MemAddr os_realloc(Heap* heap, MemAddr addr, uint16_t size){
+	os_enterCriticalSection();
+	
+	uint16_t nib = (addr - heap->firstUseAddr);
+
+	uint16_t nibbleStartAddr = getStartOfBlock(heap, nib);
+	addr = heap->firstUseAddr + nibbleStartAddr;
+	MemAddr orgAddr = addr;
+
+	ProcessID curProc = os_getCurrentProc();
+	if(curProc == getNibble(heap, nibbleStartAddr)){
+		uint16_t chunkSize = os_getChunkSize(heap, addr);
+
+		if(size == chunkSize){
+
+			} else if(size < chunkSize){
+			for(uint16_t nib = nibbleStartAddr + size; nib < nibbleStartAddr + chunkSize; nib++){
+				MemAddr curMemAddr = convertToMemAddr(heap,nib);
+				MemValue fullByte = heap->driver->read(curMemAddr);
+				if(nib % 2 == 0){
+					fullByte = (fullByte & 0x0f) | (0 << 4);
+					} else {
+					fullByte = (fullByte & 0xf0) | 0;
+				}
+				heap->driver->write(curMemAddr,fullByte);
+			}
+			} else {
+			uint16_t avail = chunkSize;
+			uint16_t curNibbleAddr = nibbleStartAddr + chunkSize;
+			while(getNibble(heap, curNibbleAddr) == 0 && avail < size && curNibbleAddr < heap->sizeUse){
+				avail++;
+				curNibbleAddr++;
+			}
+
+			if(avail >= size){
+				for(uint16_t nib = nibbleStartAddr + chunkSize; nib < curNibbleAddr; nib++){
+					//setNibble(heap, nib, 0xf);
+					MemAddr curMemAddr = convertToMemAddr(heap,nib);
+					MemValue fullByte = heap->driver->read(curMemAddr);
+					if(nib % 2 == 0){
+						fullByte = (fullByte & 0x0f) | (0xf << 4);
+						} else {
+						fullByte = (fullByte & 0xf0) | 0xf;
+					}
+					heap->driver->write(curMemAddr,fullByte);
+				}
+
+				if(heap->lastNibble[curProc] < nibbleStartAddr + size){
+					heap->lastNibble[curProc] = nibbleStartAddr + size;
+				}
+				} else {
+				curNibbleAddr = nibbleStartAddr - 1;
+				while(getNibble(heap, curNibbleAddr) == 0 && curNibbleAddr >= 0){
+					avail++;
+					if(curNibbleAddr == 0){
+						break;
+						} else {
+						curNibbleAddr--;
+					}
+				}
+				if(getNibble(heap, curNibbleAddr) != 0){
+					curNibbleAddr++;
+				}
+				if(avail < size){
+					addr = 0;
+					} else {
+					//addr = getAddrForNibble(heap, curNibbleAddr); 
+					addr = heap->firstUseAddr + curNibbleAddr;
+
+					for(MemAddr offset = 0; offset < chunkSize; offset++){
+						uint8_t byte = heap->driver->read(orgAddr + offset);
+						heap->driver->write(addr + offset, byte);
+					}
+
+					//setNibble(heap, curNibbleAddr, curProc);
+					MemAddr curMemAddr = convertToMemAddr(heap,curNibbleAddr);
+					MemValue fullByte = heap->driver->read(curMemAddr);
+					if(curNibbleAddr % 2 == 0){
+						fullByte = (fullByte & 0x0f) | (curProc << 4);
+						} else {
+						fullByte = (fullByte & 0xf0) | curProc;
+					}
+					heap->driver->write(curMemAddr, fullByte);
+					
+					for(uint16_t nib = curNibbleAddr + 1; nib < (curNibbleAddr + size); nib++){
+						//setNibble(heap, nib, 0xf);
+						MemAddr curMemAddr = convertToMemAddr(heap,nib);
+						MemValue fullByte = heap->driver->read(curMemAddr);
+						if(nib % 2 == 0){
+							fullByte = (fullByte & 0x0f) | (0xf << 4);
+							} else {
+							fullByte = (fullByte & 0xf0) | 0xf;
+						}
+						heap->driver->write(curMemAddr,fullByte);
+					}
+
+					for(uint16_t nib = curNibbleAddr + size; nib < nibbleStartAddr + chunkSize; nib++){
+						//setNibble(heap, nib, 0);
+						MemAddr curMemAddr = convertToMemAddr(heap,nib);
+						MemValue fullByte = heap->driver->read(curMemAddr);
+						if(nib % 2 == 0){
+							fullByte = (fullByte & 0x0f) | (0 << 4);
+							} else {
+							fullByte = (fullByte & 0xf0) | 0;
+						}
+						heap->driver->write(curMemAddr,fullByte);
+					}
+
+					if(heap->lastNibble[curProc] < curNibbleAddr + size){
+						heap->lastNibble[curProc] = curNibbleAddr + size;
+					}
+
+					if(heap->firstNibble[curProc] > curNibbleAddr){
+						heap->firstNibble[curProc] = curNibbleAddr;
+					}
+				}
+
+			}
+		}
+	}
+
+	if(addr == 0){
+		addr = os_malloc(heap, size);
+		if(addr != 0){
+			for(uint16_t offset = 0; offset < os_getChunkSize(heap,orgAddr); offset++){
+				uint8_t byte = heap->driver->read(orgAddr + offset);
+				heap->driver->write(addr + offset, byte);
+			}
+			os_free(heap,orgAddr);
+		}
+	}
+
+	os_leaveCriticalSection();
+
+	return addr;
+}
+
+void os_freeProcessMemory(Heap* heap, ProcessID pid){
+	os_enterCriticalSection();
+
+	uint16_t min = heap->firstNibble[pid];
+	uint16_t max = heap->lastNibble[pid];
+
+	for(uint16_t nib = min; nib < max; nib++){
+		if(getNibble(heap, nib) == pid){
+			do {
+				//setNibble(heap, nib, 0);
+				MemAddr curMemAddr = convertToMemAddr(heap,nib);
+				MemValue fullByte = heap->driver->read(curMemAddr);
+				if(nib % 2 == 0){
+					fullByte = (fullByte & 0x0f) | (0 << 4);
+					} else {
+					fullByte = (fullByte & 0xf0) | 0;
+				}
+				heap->driver->write(curMemAddr,fullByte);
+				nib++;
+			} while(nib < max && getNibble(heap, nib) == 0xf);
+			nib--;
+		}
+	}
+	os_leaveCriticalSection();
 }
